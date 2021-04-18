@@ -1,0 +1,113 @@
+#!/bin/bash
+
+CHECK_SCREEN_STATE=false
+MIN_AMBIENT_DIFF=0
+
+TEMP=$( getopt -o "" --long check-scr-state,video-dev:,backlight-type:,min:,steps:,step-delay:,pause:,min-ambient-diff:: -- "$@" )
+
+eval set -- "$TEMP"
+unset TEMP
+
+if ([ "$1" == "--" ]); then
+	echo "No arguments provided!
+Usage:
+ $0 --video-dev <path> --backlight-type <type> --min <minimal brightness> --steps <count> --step-delay <seconds> --pause <seconds> [--min-ambient-diff <value>] [--check-scr-state]
+ 
+Options:
+ --video-dev		path to a camera from which the ambient value will be read
+ --backlight-type	type of the backlight driver (usually intel or amd)
+ --min				minimal brightness level
+ --steps			count of steps of smooth brighness change (higher - smoother)
+ --step-delay		delay between steps during smooth change
+ --pause			additional delay between measures
+ --check-scr-state	skip measures when screen off (usually when laptop lid is closed)
+ --min-ambient-diff	minimal difference between current and last ambient values required to change btighness (helps to ignore small ambient changes, default 0)"
+
+	exit 1
+fi
+
+while true; do
+	case "$1" in
+		--check-scr-state)
+			CHECK_SCREEN_STATE=true
+			shift
+		;;
+		--video-dev)
+			VIDEO_DEV="$2"
+			shift 2
+		;;
+		--backlight-type)
+			BACKLIGHT_TYPE="$2_backlight"
+			shift 2
+		;;
+		--min)
+			MIN="$2"
+			shift 2
+		;;
+		--steps)
+			STEPS="$2"
+			shift 2
+		;;
+		--step-delay)
+			STEP_DELAY="$2"
+			shift 2
+		;;
+		--pause)
+			PAUSE="$2"
+			shift 2
+		;;
+		--min-ambient_diff)
+			MIN_AMBIENT_DIFF="$2"
+			shift 2
+		;;
+		--)
+			shift
+			break
+		;;
+	esac
+done
+
+DIR="/sys/class/backlight/$BACKLIGHT_TYPE"
+ACTUAL_BR="$DIR/actual_brightness"
+BRIGHTNESS="$DIR/brightness"
+
+MAX=$( cat "$DIR/max_brightness" )
+RANGE=$(( $MAX - $MIN ))
+
+last_ambient=0
+
+while true; do
+	sleep $PAUSE
+
+	if $CHECK_SCREEN_STATE; then
+		real_brightness=$( cat "$ACTUAL_BR" )
+		if ([ $real_brightness -eq 0 ]); then
+			sleep $STEP_DELAY * $STEPS
+            continue
+        fi
+	fi
+
+	ambient=$( ffmpeg -i $VIDEO_DEV -vf scale=1:1 -pix_fmt gray -f rawvideo -frames:v 1 -v quiet pipe:1 | od -t u | sed 's/000000[01]\s*//' )
+	ambient_diff=$(( $last_ambient - $ambient ))
+
+	if ([ ${ambient_diff#-} -lt $MIN_AMBIENT_DIFF ]); then
+        continue
+    fi
+
+	last_ambient=$ambient
+
+	curr_brightness=$( cat "$BRIGHTNESS" )
+	new_brightness=$(( $MIN + $RANGE * $ambient / 255 ))
+	incr=$(( ($new_brightness - $curr_brightness) / $STEPS ))
+
+	if ([ $incr -eq 0 ]); then
+        incr=$(( $new_brightness > $curr_brightness ? 1 : -1 ))
+    fi
+
+    for br in $(seq $curr_brightness $incr $new_brightness)
+    do  
+        echo $br >> "$BRIGHTNESS"
+        sleep $STEP_DELAY
+    done
+    echo $new_brightness >> "$BRIGHTNESS"
+done

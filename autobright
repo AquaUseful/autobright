@@ -56,7 +56,7 @@ while true; do
 			PAUSE="$2"
 			shift 2
 		;;
-		--min-ambient_diff)
+		--min-ambient-diff)
 			MIN_AMBIENT_DIFF="$2"
 			shift 2
 		;;

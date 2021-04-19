@@ -82,12 +82,16 @@ while true; do
 	if $CHECK_SCREEN_STATE; then
 		real_brightness=$( cat "$ACTUAL_BR" )
 		if ([ $real_brightness -eq 0 ]); then
-			sleep $STEP_DELAY * $STEPS
             continue
         fi
 	fi
 
 	ambient=$( ffmpeg -i $VIDEO_DEV -vf scale=1:1 -pix_fmt gray -f rawvideo -frames:v 1 -v quiet pipe:1 | od -t u | sed 's/000000[01]\s*//' )
+
+	if [[ $ambient == "" ]]; then
+		continue
+	fi
+
 	ambient_diff=$(( $last_ambient - $ambient ))
 
 	if ([ ${ambient_diff#-} -lt $MIN_AMBIENT_DIFF ]); then

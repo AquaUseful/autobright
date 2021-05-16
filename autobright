@@ -188,13 +188,11 @@ function calculate_brightness() {
 function regulator() {
 	while true; do
 		sleep $PAUSE
-		if [[ "$CHECK_SCREEN_STATE" -eq 1 && ! screen_on ]]; then
-			error "Screen on"
+		if [[ "$CHECK_SCREEN_STATE" -eq 1 ]] && ! screen_on; then
 			continue
 		fi
 		local ambient=$(get_ambient)
 		if [[ -z "$ambient" ]]; then
-			error "Ambient empty"
 			continue
 		fi
 		local new_brightness=$(calculate_brightness "$ambient")

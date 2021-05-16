@@ -31,7 +31,6 @@ function read_config() {
 		if [[ "$line" == \#* || -z "$line" ]]; then
 			continue
 		fi
-		#echo "$line"
 		IFS='=' read -r key value <<<"$line"
 		export $key="${value//\"/}"
 	done <"$CONFIG_PATH"
@@ -50,8 +49,8 @@ function check_configuration() {
 		crash ""$BACKLIGHT_TYPE" does not exist!"
 	fi
 	if [[ "$CORRECTION" == "crt" ]]; then
-		if [[ -z "$CRT_CURVE_POWER" ]]; then
-			crash "'crt' correction requires CRT_CURVE_POWER parameter in config!"
+		if [[ -z "$CRT_GAMMA" ]]; then
+			crash "'crt' correction requires CRT_GAMMA parameter in config!"
 		fi
 	fi
 }
@@ -158,7 +157,7 @@ function calculate_brightness_linear() {
 
 function calculate_brightness_crt() {
 	local ambient="$1"
-	local corrected_ambient=$(bc -l <<<"$MAX_AMBIENT / $(float_pow $MAX_AMBIENT $CRT_CURVE_POWER) * $(float_pow $ambient $CRT_CURVE_POWER)")
+	local corrected_ambient=$(bc -l <<<"$MAX_AMBIENT / $(float_pow $MAX_AMBIENT $CRT_GAMMA) * $(float_pow $ambient $CRT_GAMMA)")
 	local new_brightness=$(ambient_to_brightness "$corrected_ambient")
 	local new_brightness=$(round "$new_brightness")
 	echo "$new_brightness"

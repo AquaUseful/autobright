@@ -1,117 +1,212 @@
 #!/bin/bash
 
-CHECK_SCREEN_STATE=false
-MIN_AMBIENT_DIFF=0
+REQUIRED_CONFIG_KEYS=('VIDEO_DEV' 'BACKLIGHT_TYPE' 'MIN' 'STEPS' 'STEP_DELAY' 'PAUSE' 'CHECK_SCREEN_STATE' 'MIN_BRIGHTNESS_DIFF' 'BACKLIGHT_CLASS_DIR' 'CORRECTION')
+MAX_AMBIENT=255
 
-TEMP=$( getopt -o "" --long check-scr-state,video-dev:,backlight-type:,min:,steps:,step-delay:,pause:,min-ambient-diff:: -- "$@" )
-
-eval set -- "$TEMP"
-unset TEMP
-
-if ([ "$1" == "--" ]); then
-	echo "No arguments provided!
-Usage:
- $0 --video-dev <path> --backlight-type <type> --min <minimal brightness> --steps <count> --step-delay <seconds> --pause <seconds> [--min-ambient-diff <value>] [--check-scr-state]
- 
-Options:
- --video-dev		path to a camera from which the ambient value will be read
- --backlight-type	type of the backlight driver (usually intel or amd)
- --min				minimal brightness level
- --steps			count of steps of smooth brighness change (higher - smoother)
- --step-delay		delay between steps during smooth change
- --pause			additional delay between measures
- --check-scr-state	skip measures when screen off (usually when laptop lid is closed)
- --min-ambient-diff	minimal difference between current and last ambient values required to change btighness (helps to ignore small ambient changes, default 0)"
-
+function crash() {
+	echo "$@" 1>&2
 	exit 1
-fi
+}
 
-while true; do
-	case "$1" in
-		--check-scr-state)
-			CHECK_SCREEN_STATE=true
-			shift
+function error() {
+	echo "$@" 1>&2
+}
+
+function print_usage() {
+	echo "Usage: "
+	echo "$0 [-c config_file] | [-h]"
+	echo "	-c	path to a config file"
+	echo "	-h	show this help"
+}
+
+function check_args_count() {
+	if [[ $# -lt 1 ]]; then
+		crash "No options provided! Use -h to show available options."
+	fi
+}
+
+function read_config() {
+	local CONFIG_PATH="$1"
+	while read -r line; do
+		if [[ "$line" == \#* || -z "$line" ]]; then
+			continue
+		fi
+		#echo "$line"
+		IFS='=' read -r key value <<<"$line"
+		export $key="${value//\"/}"
+	done <"$CONFIG_PATH"
+}
+
+function check_configuration() {
+	for param in ${REQUIRED_CONFIG_KEYS[*]}; do
+		if [[ -z ${!param+x} ]]; then
+			crash "Missing ${param} parameter in config!"
+		fi
+	done
+	if [[ ! -c "$VIDEO_DEV" ]]; then
+		crash ""$VIDEO_DEV" is not a valid video device!"
+	fi
+	if [[ ! -d "$BACKLIGHT_CLASS_DIR" ]]; then
+		crash ""$BACKLIGHT_TYPE" does not exist!"
+	fi
+	if [[ "$CORRECTION" == "crt" ]]; then
+		if [[ -z "$CRT_CURVE_POWER" ]]; then
+			crash "'crt' correction requires CRT_CURVE_POWER parameter in config!"
+		fi
+	fi
+}
+
+function auto_backlight_path() {
+	local backlight_path=$(find ${BACKLIGHT_CLASS_DIR} -type l -iname '*backlight*' | head -n 1)
+	if [[ -z "$backlight_path" ]]; then
+		crash "Failed to find backlight device automatically! Specify it manually in config!"
+	else
+		echo "$backlight_path"
+	fi
+}
+
+function post_configuration() {
+	BACKLIGHT_PATH="$(auto_backlight_path)"
+}
+
+function parse_arguments() {
+	while getopts 'c:h' arg; do
+		case $arg in
+		h)
+			print_usage
+			exit 0
+			;;
+		c)
+			read_config "$OPTARG"
+			;;
+		esac
+	done
+}
+
+function screen_on() {
+	local real_brightness=$(<"$BACKLIGHT_PATH/actual_brightness")
+	if [[ $real_brightness -eq 0 ]]; then
+		return 1
+	fi
+}
+
+function get_ambient() {
+	local ambient=$(ffmpeg -i $VIDEO_DEV -vf scale=1:1 -pix_fmt gray -f rawvideo -frames:v 1 -v quiet pipe:1 | od -t u | sed 's/000000[01]\s*//')
+	echo "$ambient"
+}
+
+function get_curr_brightness() {
+	local brightness=$(<"$BACKLIGHT_PATH/brightness")
+	echo "$brightness"
+}
+
+function set_brightness() {
+	local brightness="$1"
+	echo "$brightness" >>"$BACKLIGHT_PATH/brightness"
+}
+
+function get_max_brightness() {
+	local max_brightness=$(<"$BACKLIGHT_PATH/max_brightness")
+	echo "$max_brightness"
+}
+
+function set_brightness_smooth() {
+	local new_brightness="$1"
+	local curr_brightness=$(get_curr_brightness)
+	incr=$((($new_brightness - $curr_brightness) / $STEPS))
+	if [[ $incr -eq 0 ]]; then
+		incr=$(($new_brightness > $curr_brightness ? 1 : -1))
+	fi
+	for br in $(seq $curr_brightness $incr $new_brightness); do
+		set_brightness $br
+		sleep $STEP_DELAY
+	done
+	set_brightness $new_brightness
+}
+
+function round() {
+	local value="$1"
+	local result=$(printf "%.0f\n" "$value")
+	echo "$result"
+}
+
+function float_pow() {
+	local base="$1"
+	local power="$2"
+	if [[ $base -eq 0 ]]; then
+		echo "0"
+	else
+		local result=$(bc -l <<<"e(l($base) * $power)")
+		echo "$result"
+	fi
+}
+
+function ambient_to_brightness() {
+	local ambient="$1"
+	local max_brightness=$(get_max_brightness)
+	local range=$(($max_brightness - $MIN))
+	local brightness=$(bc -l <<<"$MIN + $range * ($ambient / $MAX_AMBIENT)")
+	echo "$brightness"
+}
+
+function calculate_brightness_linear() {
+	local ambient="$1"
+	local new_brightness=$(ambient_to_brightness "$ambient")
+	local new_brightness=$(round "$new_brightness")
+	echo "$new_brightness"
+}
+
+function calculate_brightness_crt() {
+	local ambient="$1"
+	local corrected_ambient=$(bc -l <<<"$MAX_AMBIENT / $(float_pow $MAX_AMBIENT $CRT_CURVE_POWER) * $(float_pow $ambient $CRT_CURVE_POWER)")
+	local new_brightness=$(ambient_to_brightness "$corrected_ambient")
+	local new_brightness=$(round "$new_brightness")
+	echo "$new_brightness"
+}
+
+function check_brightness_diff() {
+	local new_brightness="$1"
+	local curr_brightness=$(get_curr_brightness)
+	local brightness_diff=$(($new_brightness - $curr_brightness))
+	if [[ ${brightness_diff#-} -lt $MIN_BRIGHTNESS_DIFF ]]; then
+		return 1
+	fi
+}
+
+function calculate_brightness() {
+	local ambient="$1"
+	case "$CORRECTION" in
+	"crt")
+		local new_brightness=$(calculate_brightness_crt "$ambient")
 		;;
-		--video-dev)
-			VIDEO_DEV="$2"
-			shift 2
-		;;
-		--backlight-type)
-			BACKLIGHT_TYPE="$2_backlight"
-			shift 2
-		;;
-		--min)
-			MIN="$2"
-			shift 2
-		;;
-		--steps)
-			STEPS="$2"
-			shift 2
-		;;
-		--step-delay)
-			STEP_DELAY="$2"
-			shift 2
-		;;
-		--pause)
-			PAUSE="$2"
-			shift 2
-		;;
-		--min-ambient-diff)
-			MIN_AMBIENT_DIFF="$2"
-			shift 2
-		;;
-		--)
-			shift
-			break
+	"linear")
+		local new_brightness=$(calculate_brightness_linear "$ambient")
 		;;
 	esac
-done
+	echo "$new_brightness"
+}
 
-DIR="/sys/class/backlight/$BACKLIGHT_TYPE"
-ACTUAL_BR="$DIR/actual_brightness"
-BRIGHTNESS="$DIR/brightness"
+function regulator() {
+	while true; do
+		sleep $PAUSE
+		if [[ "$CHECK_SCREEN_STATE" -eq 1 && ! screen_on ]]; then
+			error "Screen on"
+			continue
+		fi
+		local ambient=$(get_ambient)
+		if [[ -z "$ambient" ]]; then
+			error "Ambient empty"
+			continue
+		fi
+		local new_brightness=$(calculate_brightness "$ambient")
+		if check_brightness_diff "$new_brightness"; then
+			set_brightness_smooth "$new_brightness" &
+		fi
+	done
+}
 
-MAX=$( cat "$DIR/max_brightness" )
-RANGE=$(( $MAX - $MIN ))
-
-last_ambient=0
-
-while true; do
-	sleep $PAUSE
-
-	if $CHECK_SCREEN_STATE; then
-		real_brightness=$( cat "$ACTUAL_BR" )
-		if ([ $real_brightness -eq 0 ]); then
-            continue
-        fi
-	fi
-
-	ambient=$( ffmpeg -i $VIDEO_DEV -vf scale=1:1 -pix_fmt gray -f rawvideo -frames:v 1 -v quiet pipe:1 | od -t u | sed 's/000000[01]\s*//' )
-
-	if [[ $ambient == "" ]]; then
-		continue
-	fi
-
-	ambient_diff=$(( $last_ambient - $ambient ))
-
-	if ([ ${ambient_diff#-} -lt $MIN_AMBIENT_DIFF ]); then
-        continue
-    fi
-
-	last_ambient=$ambient
-
-	curr_brightness=$( cat "$BRIGHTNESS" )
-	new_brightness=$(( $MIN + $RANGE * $ambient / 255 ))
-	incr=$(( ($new_brightness - $curr_brightness) / $STEPS ))
-
-	if ([ $incr -eq 0 ]); then
-        incr=$(( $new_brightness > $curr_brightness ? 1 : -1 ))
-    fi
-
-    for br in $(seq $curr_brightness $incr $new_brightness)
-    do  
-        echo $br >> "$BRIGHTNESS"
-        sleep $STEP_DELAY
-    done
-    echo $new_brightness >> "$BRIGHTNESS"
-done
+check_args_count $@
+parse_arguments $@
+check_configuration
+post_configuration
+regulator

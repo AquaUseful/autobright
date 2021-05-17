@@ -46,7 +46,7 @@ function check_configuration() {
 		crash ""$VIDEO_DEV" is not a valid video device!"
 	fi
 	if [[ ! -d "$BACKLIGHT_CLASS_DIR" ]]; then
-		crash ""$BACKLIGHT_TYPE" does not exist!"
+		crash ""$BACKLIGHT_CLASS_DIR" does not exist!"
 	fi
 	if [[ "$CORRECTION" == "crt" ]]; then
 		if [[ -z "$CRT_GAMMA" ]]; then
@@ -65,7 +65,11 @@ function auto_backlight_path() {
 }
 
 function post_configuration() {
-	BACKLIGHT_PATH="$(auto_backlight_path)"
+	if [[ "$BACKLIGHT_TYPE" == "auto" ]]; then
+		BACKLIGHT_PATH="$(auto_backlight_path)"
+	else
+		BACKLIGHT_PATH="${BACKLIGHT_CLASS_DIR}/${BACKLIGHT_TYPE}_backlight"
+	fi
 }
 
 function parse_arguments() {

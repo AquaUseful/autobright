@@ -1,6 +1,7 @@
 #!/bin/bash
 
-REQUIRED_CONFIG_KEYS=('VIDEO_DEV' 'BACKLIGHT_TYPE' 'MIN' 'STEPS' 'STEP_DELAY' 'PAUSE' 'CHECK_SCREEN_STATE' 'MIN_BRIGHTNESS_DIFF' 'BACKLIGHT_CLASS_DIR' 'CORRECTION')
+REQUIRED_CONFIG_KEYS=('VIDEO_DEV' 'BACKLIGHT_TYPE' 'STEPS' 'STEP_DELAY' 'PAUSE' 'CHECK_SCREEN_STATE' 'MIN_BRIGHTNESS_DIFF' 'BACKLIGHT_CLASS_DIR' 'CORRECTION')
+MIN_AMBIENT=0
 MAX_AMBIENT=255
 
 function crash() {
@@ -25,68 +26,11 @@ function check_args_count() {
 	fi
 }
 
-function read_config() {
-	local CONFIG_PATH="$1"
-	while read -r line; do
-		if [[ "$line" == \#* || -z "$line" ]]; then
-			continue
-		fi
-		IFS='=' read -r key value <<<"$line"
-		export $key="${value//\"/}"
-	done <"$CONFIG_PATH"
-}
-
-function check_configuration() {
-	for param in ${REQUIRED_CONFIG_KEYS[*]}; do
-		if [[ -z ${!param+x} ]]; then
-			crash "Missing ${param} parameter in config!"
-		fi
-	done
-	if [[ ! -c "$VIDEO_DEV" ]]; then
-		crash ""$VIDEO_DEV" is not a valid video device!"
-	fi
-	if [[ ! -d "$BACKLIGHT_CLASS_DIR" ]]; then
-		crash ""$BACKLIGHT_CLASS_DIR" does not exist!"
-	fi
-	if [[ "$CORRECTION" == "crt" ]]; then
-		if [[ -z "$CRT_GAMMA" ]]; then
-			crash "'crt' correction requires CRT_GAMMA parameter in config!"
-		fi
-	fi
-}
-
-function auto_backlight_path() {
-	local backlight_path=$(find ${BACKLIGHT_CLASS_DIR} -type l -iname '*backlight*' | head -n 1)
-	if [[ -z "$backlight_path" ]]; then
-		crash "Failed to find backlight device automatically! Specify it manually in config!"
-	else
-		echo "$backlight_path"
-	fi
-}
-
-function post_configuration() {
-	if [[ "$BACKLIGHT_TYPE" == "auto" ]]; then
-		BACKLIGHT_PATH="$(auto_backlight_path)"
-	else
-		BACKLIGHT_PATH="${BACKLIGHT_CLASS_DIR}/${BACKLIGHT_TYPE}_backlight"
-		if [[ ! -d "$BACKLIGHT_PATH" ]]; then
-			crash "Backlight device '$BACKLIGHT_PATH' does not exist! Check BACKLIGHT_CLASS_DIR and BACKLIGHT_TYPE"
-		fi
-	fi
-}
-
-function parse_arguments() {
-	while getopts 'c:h' arg; do
-		case $arg in
-		h)
-			print_usage
-			exit 0
-			;;
-		c)
-			read_config "$OPTARG"
-			;;
-		esac
-	done
+function percents_of() {
+	local value="$1"
+	local percents="$2"
+	local result=$(bc -l <<<"$value * $percents / 100")
+	echo "$result"
 }
 
 function screen_on() {
@@ -147,11 +91,104 @@ function float_pow() {
 	fi
 }
 
+function rremap() {
+	local value="$1"
+	local min="$2"
+	local max="$3"
+	local new_min="$4"
+	local new_max="$5"
+	local result=$(bc -l <<<"($value - $min) * ($new_max - $new_min) / ($max - $min) + $new_min")
+	echo "$result"
+}
+
+function read_config() {
+	local CONFIG_PATH="$1"
+	while read -r line; do
+		if [[ "$line" == \#* || -z "$line" ]]; then
+			continue
+		fi
+		IFS='=' read -r key value <<<"$line"
+		export $key="${value//\"/}"
+	done <"$CONFIG_PATH"
+}
+
+function check_configuration() {
+	for param in ${REQUIRED_CONFIG_KEYS[*]}; do
+		if [[ -z ${!param+x} ]]; then
+			crash "Missing ${param} parameter in config!"
+		fi
+	done
+	if [[ ! -c "$VIDEO_DEV" ]]; then
+		crash ""$VIDEO_DEV" is not a valid video device!"
+	fi
+	if [[ ! -d "$BACKLIGHT_CLASS_DIR" ]]; then
+		crash ""$BACKLIGHT_CLASS_DIR" does not exist!"
+	fi
+	if [[ "$CORRECTION" == "crt" ]]; then
+		if [[ -z "$CRT_GAMMA" ]]; then
+			crash "'crt' correction requires CRT_GAMMA parameter in config!"
+		fi
+	fi
+	if [[ -z "$MIN" ]] && [[ -z "$MIN_PERCENT" ]]; then
+		crash "Option MIN or MIN_PERCENT must be specified in config!"
+	fi
+	if [[ -z "$MAX" ]] && [[ -z "$MAX_PERCENT" ]]; then
+		crash "Option MAX or MAX_PERCENT must be specified in config!"
+	fi
+}
+
+function post_configuration() {
+	if [[ "$BACKLIGHT_TYPE" == "auto" ]]; then
+		BACKLIGHT_PATH="$(auto_backlight_path)"
+	else
+		BACKLIGHT_PATH="${BACKLIGHT_CLASS_DIR}/${BACKLIGHT_TYPE}_backlight"
+	fi
+	if [[ ! -z "$MIN" ]]; then
+		MIN_BR="$MIN"
+	else
+		local min_br_fl=$(percents_of "$(get_max_brightness)" "$MIN_PERCENT")
+		MIN_BR=$(round "$min_br_fl")
+	fi
+	if [[ ! -z "$MAX" ]]; then
+		MAX_BR="$MAX"
+	else
+		local max_br_fl=$(percents_of "$(get_max_brightness)" "$MAX_PERCENT")
+		MAX_BR=$(round "$max_br_fl")
+	fi
+}
+
+function check_post_confuguration() {
+	if [[ ! -d "$BACKLIGHT_PATH" ]]; then
+		crash "Backlight device '$BACKLIGHT_PATH' does not exist! Check BACKLIGHT_CLASS_DIR and BACKLIGHT_TYPE"
+	fi
+}
+
+function auto_backlight_path() {
+	local backlight_path=$(find ${BACKLIGHT_CLASS_DIR} -type l -iname '*backlight*' | head -n 1)
+	if [[ -z "$backlight_path" ]]; then
+		crash "Failed to find backlight device automatically! Specify it manually in config!"
+	else
+		echo "$backlight_path"
+	fi
+}
+
+function parse_arguments() {
+	while getopts 'c:h' arg; do
+		case $arg in
+		h)
+			print_usage
+			exit 0
+			;;
+		c)
+			read_config "$OPTARG"
+			;;
+		esac
+	done
+}
+
 function ambient_to_brightness() {
 	local ambient="$1"
-	local max_brightness=$(get_max_brightness)
-	local range=$(($max_brightness - $MIN))
-	local brightness=$(bc -l <<<"$MIN + $range * ($ambient / $MAX_AMBIENT)")
+	local brightness=$(rremap "$ambient" "$MIN_AMBIENT" "$MAX_AMBIENT" "$MIN_BR" "$MAX_BR")
 	echo "$brightness"
 }
 
@@ -213,4 +250,6 @@ check_args_count $@
 parse_arguments $@
 check_configuration
 post_configuration
+check_post_confuguration
+echo "$MIN_BR $MAX_BR"
 regulator

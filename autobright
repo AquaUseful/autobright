@@ -53,9 +53,6 @@ function check_configuration() {
 			crash "'crt' correction requires CRT_GAMMA parameter in config!"
 		fi
 	fi
-	if [[ ! -d "${BACKLIGHT_CLASS_DIR}/${BACKLIGHT_TYPE}_backlight" ]]; then
-		crash "Backlight device '$BACKLIGHT_PATH' does not exist! Check BACKLIGHT_CLASS_DIR and BACKLIGHT_TYPE"
-	fi
 }
 
 function auto_backlight_path() {
@@ -72,6 +69,9 @@ function post_configuration() {
 		BACKLIGHT_PATH="$(auto_backlight_path)"
 	else
 		BACKLIGHT_PATH="${BACKLIGHT_CLASS_DIR}/${BACKLIGHT_TYPE}_backlight"
+		if [[ ! -d "$BACKLIGHT_PATH" ]]; then
+			crash "Backlight device '$BACKLIGHT_PATH' does not exist! Check BACKLIGHT_CLASS_DIR and BACKLIGHT_TYPE"
+		fi
 	fi
 }
 

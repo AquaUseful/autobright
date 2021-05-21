@@ -1,6 +1,7 @@
 #!/bin/bash
 
 REQUIRED_CONFIG_KEYS=('VIDEO_DEV' 'BACKLIGHT_TYPE' 'STEPS' 'STEP_DELAY' 'PAUSE' 'CHECK_SCREEN_STATE' 'MIN_BRIGHTNESS_DIFF' 'BACKLIGHT_CLASS_DIR' 'CORRECTION')
+TRUE_FALSE_KEYS=('CHECK_SCREEN_STATE')
 MIN_AMBIENT=0
 MAX_AMBIENT=255
 
@@ -116,6 +117,11 @@ function check_configuration() {
 	for param in ${REQUIRED_CONFIG_KEYS[*]}; do
 		if [[ -z ${!param+x} ]]; then
 			crash "Missing ${param} parameter in config!"
+		fi
+	done
+	for param in ${TRUE_FALSE_KEYS[*]}; do
+		if ! [[ ${!param} -eq 1 ]] || [[ ${!param} -eq 0 ]]; then
+			crash "Only 1 and 0 are valid values for ${param}!"
 		fi
 	done
 	if [[ ! -c "$VIDEO_DEV" ]]; then

@@ -1,7 +1,8 @@
 #!/bin/bash
 
-REQUIRED_CONFIG_KEYS=('VIDEO_DEV' 'BACKLIGHT_TYPE' 'STEPS' 'STEP_DELAY' 'PAUSE' 'CHECK_SCREEN_STATE' 'MIN_BRIGHTNESS_DIFF' 'BACKLIGHT_CLASS_DIR' 'CORRECTION')
-TRUE_FALSE_KEYS=('CHECK_SCREEN_STATE')
+REQUIRED_CONFIG_KEYS=('VIDEO_DEV' 'BACKLIGHT_TYPE' 'STEPS' 'STEP_DELAY' 'PAUSE' 'CHECK_SCREEN_STATE' 'MIN_BRIGHTNESS_DIFF' 'BACKLIGHT_CLASS_DIR' 'CORRECTION' 'ECO_MODE')
+ECO_MODE_REQUIRED_KEYS=('POWER_SUPPLY_CLASS_PATH' 'AC_ADAPTER' 'PAUSE_BAT')
+TRUE_FALSE_KEYS=('CHECK_SCREEN_STATE' 'ECO_MODE')
 MIN_AMBIENT=0
 MAX_AMBIENT=255
 
@@ -38,6 +39,27 @@ function screen_on() {
 	local real_brightness=$(<"$BACKLIGHT_PATH/actual_brightness")
 	if [[ $real_brightness -eq 0 ]]; then
 		return 1
+	fi
+}
+
+function eco_mode_on() {
+	if [[ $ECO_MODE -eq 0 ]]; then
+		return 1
+	fi
+}
+
+function on_battery() {
+	local ac_online=$(<"$POWER_SUPPLY_PATH/online")
+	if [[ $ac_online -eq 1 ]]; then
+		return 1
+	fi
+}
+
+function wait_pause() {
+	if eco_mode_on && on_battery; then
+		sleep "$PAUSE_BAT"
+	else
+		sleep "$PAUSE"
 	fi
 }
 
@@ -102,6 +124,15 @@ function rremap() {
 	echo "$result"
 }
 
+function check_varibles() {
+	local vars=("$@")
+	for var in ${vars[*]}; do
+		if [[ -z ${!var+x} ]]; then
+			crash "Missing $var parameter in config!"
+		fi
+	done
+}
+
 function read_config() {
 	local CONFIG_PATH="$1"
 	while read -r line; do
@@ -114,13 +145,9 @@ function read_config() {
 }
 
 function check_configuration() {
-	for param in ${REQUIRED_CONFIG_KEYS[*]}; do
-		if [[ -z ${!param+x} ]]; then
-			crash "Missing ${param} parameter in config!"
-		fi
-	done
+	check_varibles ${REQUIRED_CONFIG_KEYS[*]}
 	for param in ${TRUE_FALSE_KEYS[*]}; do
-		if ! [[ ${!param} -eq 1 ]] || [[ ${!param} -eq 0 ]]; then
+		if ! { [[ ${!param} -eq 1 ]] || [[ ${!param} -eq 0 ]]; }; then
 			crash "Only 1 and 0 are valid values for ${param}!"
 		fi
 	done
@@ -140,6 +167,15 @@ function check_configuration() {
 	fi
 	if [[ -z "$MAX" ]] && [[ -z "$MAX_PERCENT" ]]; then
 		crash "Option MAX or MAX_PERCENT must be specified in config!"
+	fi
+	if eco_mode_on; then
+		check_varibles ${ECO_MODE_REQUIRED_KEYS[*]}
+		if [[ -z "$MIN_BAT" ]] && [[ -z "$MIN_PERCENT_BAT" ]]; then
+			crash "Option MIN_BAT or MIN_PERCENT_BAT must be specified in config!"
+		fi
+		if [[ -z "$MAX_BAT" ]] && [[ -z "$MAX_PERCENT_BAT" ]]; then
+			crash "Option MAX_BAT or MAX_PERCENT_BAT must be specified in config!"
+		fi
 	fi
 }
 
@@ -161,11 +197,31 @@ function post_configuration() {
 		local max_br_fl=$(percents_of "$(get_max_brightness)" "$MAX_PERCENT")
 		MAX_BR=$(round "$max_br_fl")
 	fi
+	if eco_mode_on; then
+		if [[ ! -z "$MIN_BAT" ]]; then
+			MIN_BR_BAT="$MIN_BAT"
+		else
+			local min_br_fl=$(percents_of "$(get_max_brightness)" "$MIN_PERCENT_BAT")
+			MIN_BR_BAT=$(round "$min_br_fl")
+		fi
+		if [[ ! -z "$MAX_BAT" ]]; then
+			MAX_BR_BAT="$MAX_BAT"
+		else
+			local max_br_fl=$(percents_of "$(get_max_brightness)" "$MAX_PERCENT_BAT")
+			MAX_BR_BAT=$(round "$max_br_fl")
+		fi
+		POWER_SUPPLY_PATH="$POWER_SUPPLY_CLASS_PATH/$AC_ADAPTER"
+	fi
 }
 
 function check_post_confuguration() {
 	if [[ ! -d "$BACKLIGHT_PATH" ]]; then
 		crash "Backlight device '$BACKLIGHT_PATH' does not exist! Check BACKLIGHT_CLASS_DIR and BACKLIGHT_TYPE"
+	fi
+	if eco_mode_on; then
+		if [[ ! -d "$POWER_SUPPLY_PATH" ]]; then
+			crash ""$POWER_SUPPLY_PATH" does not exist!"
+		fi
 	fi
 }
 
@@ -194,7 +250,11 @@ function parse_arguments() {
 
 function ambient_to_brightness() {
 	local ambient="$1"
-	local brightness=$(rremap "$ambient" "$MIN_AMBIENT" "$MAX_AMBIENT" "$MIN_BR" "$MAX_BR")
+	if eco_mode_on && on_battery; then
+		local brightness=$(rremap "$ambient" "$MIN_AMBIENT" "$MAX_AMBIENT" "$MIN_BR_BAT" "$MAX_BR_BAT")
+	else
+		local brightness=$(rremap "$ambient" "$MIN_AMBIENT" "$MAX_AMBIENT" "$MIN_BR" "$MAX_BR")
+	fi
 	echo "$brightness"
 }
 
@@ -237,7 +297,7 @@ function calculate_brightness() {
 
 function regulator() {
 	while true; do
-		sleep $PAUSE
+		wait_pause
 		if [[ "$CHECK_SCREEN_STATE" -eq 1 ]] && ! screen_on; then
 			continue
 		fi
@@ -257,5 +317,4 @@ parse_arguments $@
 check_configuration
 post_configuration
 check_post_confuguration
-echo "$MIN_BR $MAX_BR"
 regulator
